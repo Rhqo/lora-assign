@@ -7,7 +7,7 @@ from transformers import PreTrainedTokenizer, default_data_collator
 import sys
 sys.path.append(".")
 
-from configs.config import DataConfig, DatasetType
+from configs.config import DataConfig, DatasetType, TaskType
 
 
 def load_and_preprocess_dataset(
@@ -35,6 +35,12 @@ def load_and_preprocess_dataset(
     elif config.dataset_type == DatasetType.SAMSUM:
         dataset = _load_samsum(config.num_samples)
         preprocess_fn = _get_samsum_preprocess_fn(tokenizer, config.max_length)
+    elif config.dataset_type == DatasetType.WIKISQL:
+        dataset = _load_wikisql(config.num_samples)
+        preprocess_fn = _get_wikisql_preprocess_fn(tokenizer, config.max_length)
+    elif config.dataset_type == DatasetType.MULTI_NLI:
+        dataset = _load_multi_nli(config.num_samples)
+        preprocess_fn = _get_multinli_preprocess_fn(tokenizer, config.max_length)
     else:
         raise ValueError(f"Unknown dataset type: {config.dataset_type}")
 
@@ -73,6 +79,98 @@ def _load_samsum(num_samples: int) -> Dataset:
         dataset = load_dataset("knkarthick/samsum", split=f"train[:{num_samples}]")
     else:
         dataset = load_dataset("knkarthick/samsum", split="train")
+    return dataset
+
+
+def _load_wikisql(num_samples: int) -> Dataset:
+    """
+    Load WikiSQL dataset.
+    Task: Convert natural language question + table to SQL query.
+
+    Note: We load from the raw data files since the dataset script is deprecated.
+    """
+    import json
+    import tarfile
+    from pathlib import Path
+    import tempfile
+    import urllib.request
+
+    # Download and extract WikiSQL data
+    data_url = "https://github.com/salesforce/WikiSQL/raw/master/data.tar.bz2"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        archive_path = tmpdir_path / "data.tar.bz2"
+
+        # Download
+        print(f"Downloading WikiSQL data...")
+        urllib.request.urlretrieve(data_url, archive_path)
+
+        # Extract
+        print(f"Extracting WikiSQL data...")
+        with tarfile.open(archive_path, "r:bz2") as tar:
+            tar.extractall(tmpdir_path)
+
+        data_dir = tmpdir_path / "data"
+
+        # Load training data
+        train_file = data_dir / "train.jsonl"
+        tables_file = data_dir / "train.tables.jsonl"
+
+        # Load tables
+        tables = {}
+        with open(tables_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                table = json.loads(line)
+                tables[table['id']] = table
+
+        # Load training examples
+        examples = []
+        with open(train_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                example = json.loads(line)
+                # Add table information
+                example['table'] = tables[example['table_id']]
+
+                # Handle missing fields
+                example['table']['page_title'] = example['table'].get('page_title', '')
+                example['table']['section_title'] = example['table'].get('section_title', '')
+                example['table']['caption'] = example['table'].get('caption', '')
+                example['table']['name'] = example['table'].get('name', '')
+                example['table']['page_id'] = str(example['table'].get('page_id', ''))
+
+                # Convert rows to strings
+                example['table']['rows'] = [[str(cell) for cell in row] for row in example['table']['rows']]
+
+                # Restructure conds to dict format
+                conds = []
+                for cond in example['sql']['conds']:
+                    conds.append({
+                        'column_index': cond[0],
+                        'operator_index': cond[1],
+                        'condition': str(cond[2])
+                    })
+                example['sql']['conds'] = conds
+
+                examples.append(example)
+
+                if num_samples > 0 and len(examples) >= num_samples:
+                    break
+
+        # Convert to dataset
+        dataset = Dataset.from_list(examples)
+
+    return dataset
+
+
+def _load_multi_nli(num_samples: int) -> Dataset:
+    """
+    Load Multi-NLI dataset from NYU.
+    Task: 3-way classification (entailment/neutral/contradiction).
+    """
+    dataset = load_dataset("nyu-mll/multi_nli", split="train")
+    if num_samples > 0:
+        dataset = dataset.select(range(min(num_samples, len(dataset))))
     return dataset
 
 
@@ -169,6 +267,142 @@ def _get_samsum_preprocess_fn(tokenizer: PreTrainedTokenizer, max_length: int):
     return preprocess
 
 
+def _get_wikisql_preprocess_fn(tokenizer: PreTrainedTokenizer, max_length: int):
+    """
+    Get preprocessing function for WikiSQL dataset.
+
+    WikiSQL task: Convert natural language question + table schema → SQL query.
+    Format: Instruction + Table headers + Question → SQL
+    """
+    def preprocess(examples: Dict[str, Any]) -> Dict[str, Any]:
+        prompts = []
+
+        for question, table, sql in zip(
+            examples["question"],
+            examples["table"],
+            examples["sql"]
+        ):
+            # Extract table headers
+            table_headers = ", ".join(table["header"])
+
+            # Convert SQL dict to string
+            # sql structure: {sel: int, agg: int, conds: [{column_index, operator_index, condition}]}
+            agg_map = {0: "", 1: "MAX", 2: "MIN", 3: "COUNT", 4: "SUM", 5: "AVG"}
+            cond_op_map = {0: "=", 1: ">", 2: "<", 3: "OP"}
+
+            # Build SELECT clause
+            agg_op = agg_map.get(sql["agg"], "")
+            col_idx = sql["sel"]
+            if col_idx < len(table["header"]):
+                col_name = table["header"][col_idx]
+                if agg_op:
+                    select_clause = f"{agg_op}({col_name})"
+                else:
+                    select_clause = col_name
+            else:
+                select_clause = "col_" + str(col_idx)
+
+            # Build WHERE clause
+            where_conditions = []
+            for cond in sql["conds"]:
+                # cond is a dict with column_index, operator_index, condition
+                cond_col_idx = cond["column_index"]
+                cond_op_idx = cond["operator_index"]
+                cond_val = cond["condition"]
+
+                if cond_col_idx < len(table["header"]):
+                    cond_col = table["header"][cond_col_idx]
+                    op = cond_op_map.get(cond_op_idx, "=")
+                    where_conditions.append(f"{cond_col} {op} {cond_val}")
+
+            # Assemble SQL
+            sql_query = f"SELECT {select_clause} FROM table"
+            if where_conditions:
+                sql_query += " WHERE " + " AND ".join(where_conditions)
+
+            prompt = (
+                f"### Instruction: Generate SQL from question and table.\n\n"
+                f"### Table:\n{table_headers}\n\n"
+                f"### Question:\n{question}\n\n"
+                f"### SQL:\n{sql_query}"
+            )
+            prompts.append(prompt)
+
+        # Tokenize
+        model_inputs = tokenizer(
+            prompts,
+            max_length=max_length,
+            truncation=True,
+            padding="max_length",
+        )
+
+        # For causal LM, labels are same as input_ids
+        import copy
+        labels = copy.deepcopy(model_inputs["input_ids"])
+
+        # Replace padding token id with -100
+        for i in range(len(labels)):
+            for j in range(len(labels[i])):
+                if labels[i][j] == tokenizer.pad_token_id:
+                    labels[i][j] = -100
+
+        model_inputs["labels"] = labels
+
+        return model_inputs
+
+    return preprocess
+
+
+def _get_multinli_preprocess_fn(tokenizer: PreTrainedTokenizer, max_length: int):
+    """
+    Get preprocessing function for Multi-NLI dataset.
+
+    Multi-NLI task: 3-way classification (entailment/neutral/contradiction).
+    We use text generation approach: model generates the label as text.
+    """
+    def preprocess(examples: Dict[str, Any]) -> Dict[str, Any]:
+        label_map = {0: "entailment", 1: "neutral", 2: "contradiction"}
+        prompts = []
+
+        for premise, hypothesis, label in zip(
+            examples["premise"],
+            examples["hypothesis"],
+            examples["label"]
+        ):
+            label_text = label_map.get(label, "neutral")
+            prompt = (
+                f"### Instruction: Classify the relationship.\n\n"
+                f"### Premise:\n{premise}\n\n"
+                f"### Hypothesis:\n{hypothesis}\n\n"
+                f"### Classification:\n{label_text}"
+            )
+            prompts.append(prompt)
+
+        # Tokenize
+        model_inputs = tokenizer(
+            prompts,
+            max_length=max_length,
+            truncation=True,
+            padding="max_length",
+        )
+
+        # For causal LM, labels are same as input_ids
+        import copy
+        labels = copy.deepcopy(model_inputs["input_ids"])
+
+        # Replace padding token id with -100
+        for i in range(len(labels)):
+            for j in range(len(labels[i])):
+                if labels[i][j] == tokenizer.pad_token_id:
+                    labels[i][j] = -100
+
+        model_inputs["labels"] = labels
+
+        return model_inputs
+
+    return preprocess
+
+
 def get_data_collator(tokenizer: PreTrainedTokenizer):
     """
     Get data collator for language modeling.
@@ -215,6 +449,79 @@ def get_validation_dataset(
     elif config.dataset_type == DatasetType.SAMSUM:
         dataset = load_dataset("knkarthick/samsum", split=f"validation[:{val_samples}]")
         preprocess_fn = _get_samsum_preprocess_fn(tokenizer, config.max_length)
+    elif config.dataset_type == DatasetType.WIKISQL:
+        # Load WikiSQL validation set
+        import json
+        import tarfile
+        from pathlib import Path
+        import tempfile
+        import urllib.request
+
+        data_url = "https://github.com/salesforce/WikiSQL/raw/master/data.tar.bz2"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            archive_path = tmpdir_path / "data.tar.bz2"
+
+            print(f"Downloading WikiSQL validation data...")
+            urllib.request.urlretrieve(data_url, archive_path)
+
+            print(f"Extracting WikiSQL validation data...")
+            with tarfile.open(archive_path, "r:bz2") as tar:
+                tar.extractall(tmpdir_path)
+
+            data_dir = tmpdir_path / "data"
+
+            # Load validation data (dev split)
+            dev_file = data_dir / "dev.jsonl"
+            tables_file = data_dir / "dev.tables.jsonl"
+
+            # Load tables
+            tables = {}
+            with open(tables_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    table = json.loads(line)
+                    tables[table['id']] = table
+
+            # Load validation examples
+            examples = []
+            with open(dev_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    example = json.loads(line)
+                    example['table'] = tables[example['table_id']]
+
+                    # Handle missing fields
+                    example['table']['page_title'] = example['table'].get('page_title', '')
+                    example['table']['section_title'] = example['table'].get('section_title', '')
+                    example['table']['caption'] = example['table'].get('caption', '')
+                    example['table']['name'] = example['table'].get('name', '')
+                    example['table']['page_id'] = str(example['table'].get('page_id', ''))
+
+                    # Convert rows to strings
+                    example['table']['rows'] = [[str(cell) for cell in row] for row in example['table']['rows']]
+
+                    # Restructure conds to dict format
+                    conds = []
+                    for cond in example['sql']['conds']:
+                        conds.append({
+                            'column_index': cond[0],
+                            'operator_index': cond[1],
+                            'condition': str(cond[2])
+                        })
+                    example['sql']['conds'] = conds
+
+                    examples.append(example)
+
+                    if len(examples) >= val_samples:
+                        break
+
+            dataset = Dataset.from_list(examples)
+
+        preprocess_fn = _get_wikisql_preprocess_fn(tokenizer, config.max_length)
+    elif config.dataset_type == DatasetType.MULTI_NLI:
+        dataset = load_dataset("nyu-mll/multi_nli", split="validation_matched")
+        dataset = dataset.select(range(min(val_samples, len(dataset))))
+        preprocess_fn = _get_multinli_preprocess_fn(tokenizer, config.max_length)
     else:
         return None
 

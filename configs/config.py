@@ -11,6 +11,14 @@ class DatasetType(str, Enum):
     """Supported dataset types."""
     E2E_NLG = "e2e_nlg"
     SAMSUM = "samsum"
+    WIKISQL = "wikisql"
+    MULTI_NLI = "multi_nli"
+
+
+class TaskType(str, Enum):
+    """Task types."""
+    GENERATION = "generation"
+    CLASSIFICATION = "classification"
 
 
 class TargetModuleGroup(str, Enum):
@@ -23,10 +31,10 @@ class TargetModuleGroup(str, Enum):
 
 # Pre-defined target modules for each group
 TARGET_MODULES = {
-    TargetModuleGroup.ATTENTION_ONLY: ["q_proj", "k_proj", "v_proj", "o_proj"],
+    TargetModuleGroup.ATTENTION_ONLY: ["q_proj", "v_proj"], # , "k_proj", "o_proj"
     TargetModuleGroup.MLP_ONLY: ["gate_proj", "up_proj", "down_proj"],
-    TargetModuleGroup.BOTH: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    TargetModuleGroup.ALL: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"],
+    TargetModuleGroup.BOTH: ["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj"], # , "k_proj", "o_proj"
+    TargetModuleGroup.ALL: ["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"], # , "k_proj", "o_proj"
 }
 
 
@@ -81,9 +89,11 @@ class TrainingConfig:
 class DataConfig:
     """Data processing configuration."""
     dataset_type: DatasetType = DatasetType.E2E_NLG
+    task_type: TaskType = TaskType.GENERATION
     max_length: int = 128
     num_samples: int = 0  # Number of training samples (0 for full dataset)
     validation_split: float = 0.2  # Ratio for validation set (increased from 0.1)
+    num_labels: int = 3  # For classification tasks (e.g., Multi-NLI has 3 classes)
 
     @property
     def dataset_name(self) -> str:
@@ -91,8 +101,10 @@ class DataConfig:
         mapping = {
             DatasetType.E2E_NLG: "tuetschek/e2e_nlg",
             DatasetType.SAMSUM: "knkarthick/samsum",
+            DatasetType.WIKISQL: "Salesforce/wikisql",
+            DatasetType.MULTI_NLI: "nyu-mll/multi_nli",
         }
-        return mapping[self.dataset_type]
+        return mapping.get(self.dataset_type, "")
 
 
 @dataclass
@@ -113,7 +125,7 @@ class EvaluationConfig:
     temperature: float = 0.7  # Sampling temperature
     top_p: float = 0.9  # Top-p sampling
     do_sample: bool = True  # Use sampling vs greedy
-    batch_size: int = 8  # Batch size for generation
+    batch_size: int = 32  # Batch size for generation
 
 
 @dataclass

@@ -47,7 +47,7 @@ from src.utils.visualization import (
     generate_summary_report,
     load_gradient_log_from_csv,
 )
-from src.evaluation import evaluate_e2e, evaluate_samsum
+from src.evaluation import evaluate_e2e, evaluate_samsum, evaluate_wikisql, evaluate_multi_nli
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,14 +88,14 @@ Examples:
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=["e2e_nlg", "samsum"],
+        choices=["e2e_nlg", "samsum", "wikisql", "multi_nli"],
         default="e2e_nlg",
         help="Dataset to use (default: e2e_nlg)",
     )
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=500,
+        default=0,
         help="Number of training samples (default: 500, 0 for full dataset)",
     )
     parser.add_argument(
@@ -116,7 +116,7 @@ Examples:
     parser.add_argument(
         "--r",
         type=int,
-        default=8,
+        default=4,
         help="LoRA rank (default: 8)",
     )
     parser.add_argument(
@@ -136,13 +136,13 @@ Examples:
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=4,
+        default=32,
         help="Per-device batch size (default: 4)",
     )
     parser.add_argument(
         "--grad_accum",
         type=int,
-        default=4,
+        default=1,
         help="Gradient accumulation steps (default: 4)",
     )
     parser.add_argument(
@@ -618,20 +618,43 @@ def run_single_experiment(config: ExperimentConfig) -> dict:
                     num_samples=config.evaluation.num_samples,
                     output_path=str(output_dir / "evaluation_results.json"),
                 )
-            else:  # SAMSum
+                print("\n[+] Evaluation Results:")
+                print(f"  BLEU:    {eval_result.bleu:.4f}")
+                print(f"  ROUGE-1: {eval_result.rouge1:.4f}")
+                print(f"  ROUGE-2: {eval_result.rouge2:.4f}")
+                print(f"  ROUGE-L: {eval_result.rougeL:.4f}")
+                print(f"  METEOR:  {eval_result.meteor:.4f}")
+            elif config.data.dataset_type == DatasetType.SAMSUM:
                 eval_result = evaluate_samsum(
                     model_path=str(final_checkpoint),
                     base_model_id=config.model.model_id,
                     num_samples=config.evaluation.num_samples,
                     output_path=str(output_dir / "evaluation_results.json"),
                 )
-
-            print("\n[+] Evaluation Results:")
-            print(f"  BLEU:    {eval_result.bleu:.4f}")
-            print(f"  ROUGE-1: {eval_result.rouge1:.4f}")
-            print(f"  ROUGE-2: {eval_result.rouge2:.4f}")
-            print(f"  ROUGE-L: {eval_result.rougeL:.4f}")
-            print(f"  METEOR:  {eval_result.meteor:.4f}")
+                print("\n[+] Evaluation Results:")
+                print(f"  BLEU:    {eval_result.bleu:.4f}")
+                print(f"  ROUGE-1: {eval_result.rouge1:.4f}")
+                print(f"  ROUGE-2: {eval_result.rouge2:.4f}")
+                print(f"  ROUGE-L: {eval_result.rougeL:.4f}")
+                print(f"  METEOR:  {eval_result.meteor:.4f}")
+            elif config.data.dataset_type == DatasetType.WIKISQL:
+                eval_result = evaluate_wikisql(
+                    model_path=str(final_checkpoint),
+                    base_model_id=config.model.model_id,
+                    num_samples=config.evaluation.num_samples,
+                    output_path=str(output_dir / "evaluation_results.json"),
+                    batch_size=config.evaluation.batch_size,
+                )
+                # WikiSQL results are already printed in the function
+            elif config.data.dataset_type == DatasetType.MULTI_NLI:
+                eval_result = evaluate_multi_nli(
+                    model_path=str(final_checkpoint),
+                    base_model_id=config.model.model_id,
+                    num_samples=config.evaluation.num_samples,
+                    output_path=str(output_dir / "evaluation_results.json"),
+                    batch_size=config.evaluation.batch_size,
+                )
+                # Multi-NLI results are already printed in the function
 
         except Exception as e:
             print(f"\nWarning: Evaluation failed with error: {e}")

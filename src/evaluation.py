@@ -462,6 +462,289 @@ def evaluate_samsum(
     return result
 
 
+def evaluate_wikisql(
+    model_path: str,
+    base_model_id: str,
+    num_samples: int = 100,
+    output_path: Optional[str] = None,
+    batch_size: int = 8,
+) -> Dict[str, float]:
+    """
+    Evaluate on WikiSQL dataset with Exact Match metric.
+
+    Args:
+        model_path: Path to LoRA adapter
+        base_model_id: Base model ID
+        num_samples: Number of samples to evaluate
+        output_path: Path to save results
+
+    Returns:
+        Dictionary with exact_match score and num_samples
+    """
+    from datasets import Dataset
+    import re
+    import json
+    import tarfile
+    from pathlib import Path
+    import tempfile
+    import urllib.request
+
+    # Load test set from raw data
+    data_url = "https://github.com/salesforce/WikiSQL/raw/master/data.tar.bz2"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        archive_path = tmpdir_path / "data.tar.bz2"
+
+        print(f"Downloading WikiSQL test data...")
+        urllib.request.urlretrieve(data_url, archive_path)
+
+        print(f"Extracting WikiSQL test data...")
+        with tarfile.open(archive_path, "r:bz2") as tar:
+            tar.extractall(tmpdir_path)
+
+        data_dir = tmpdir_path / "data"
+
+        # Load test data
+        test_file = data_dir / "test.jsonl"
+        tables_file = data_dir / "test.tables.jsonl"
+
+        # Load tables
+        tables = {}
+        with open(tables_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                table = json.loads(line)
+                tables[table['id']] = table
+
+        # Load test examples
+        examples = []
+        with open(test_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                example = json.loads(line)
+                example['table'] = tables[example['table_id']]
+
+                # Handle missing fields
+                example['table']['page_title'] = example['table'].get('page_title', '')
+                example['table']['section_title'] = example['table'].get('section_title', '')
+                example['table']['caption'] = example['table'].get('caption', '')
+                example['table']['name'] = example['table'].get('name', '')
+                example['table']['page_id'] = str(example['table'].get('page_id', ''))
+
+                # Convert rows to strings
+                example['table']['rows'] = [[str(cell) for cell in row] for row in example['table']['rows']]
+
+                # Restructure conds to dict format
+                conds = []
+                for cond in example['sql']['conds']:
+                    conds.append({
+                        'column_index': cond[0],
+                        'operator_index': cond[1],
+                        'condition': str(cond[2])
+                    })
+                example['sql']['conds'] = conds
+
+                examples.append(example)
+
+                if num_samples > 0 and len(examples) >= num_samples:
+                    break
+
+        dataset = Dataset.from_list(examples)
+
+    # Prepare prompts and reference SQL queries
+    prompts = []
+    reference_sqls = []
+
+    for sample in dataset:
+        question = sample["question"]
+        table = sample["table"]
+        sql = sample["sql"]
+
+        # Extract table headers
+        table_headers = ", ".join(table["header"])
+
+        # Convert SQL dict to string (ground truth)
+        # sql structure: {sel: int, agg: int, conds: [{column_index, operator_index, condition}]}
+        agg_map = {0: "", 1: "MAX", 2: "MIN", 3: "COUNT", 4: "SUM", 5: "AVG"}
+        cond_op_map = {0: "=", 1: ">", 2: "<", 3: "OP"}
+
+        # Build SELECT clause
+        agg_op = agg_map.get(sql["agg"], "")
+        col_idx = sql["sel"]
+        if col_idx < len(table["header"]):
+            col_name = table["header"][col_idx]
+            if agg_op:
+                select_clause = f"{agg_op}({col_name})"
+            else:
+                select_clause = col_name
+        else:
+            select_clause = "col_" + str(col_idx)
+
+        # Build WHERE clause
+        where_conditions = []
+        for cond in sql["conds"]:
+            # cond is a dict with column_index, operator_index, condition
+            cond_col_idx = cond["column_index"]
+            cond_op_idx = cond["operator_index"]
+            cond_val = cond["condition"]
+
+            if cond_col_idx < len(table["header"]):
+                cond_col = table["header"][cond_col_idx]
+                op = cond_op_map.get(cond_op_idx, "=")
+                where_conditions.append(f"{cond_col} {op} {cond_val}")
+
+        # Assemble ground truth SQL
+        sql_query = f"SELECT {select_clause} FROM table"
+        if where_conditions:
+            sql_query += " WHERE " + " AND ".join(where_conditions)
+
+        # Create prompt (without SQL output)
+        prompt = (
+            f"### Instruction: Generate SQL from question and table.\n\n"
+            f"### Table:\n{table_headers}\n\n"
+            f"### Question:\n{question}\n\n"
+            f"### SQL:\n"
+        )
+        prompts.append(prompt)
+        reference_sqls.append(sql_query)
+
+    # Generate predictions
+    evaluator = ModelEvaluator(model_path, base_model_id)
+    predictions = evaluator.generate(
+        prompts,
+        max_new_tokens=128,
+        temperature=0.1,  # Low temperature for more deterministic SQL generation
+        do_sample=False,  # Greedy decoding
+        batch_size=batch_size,
+    )
+
+    # Compute Exact Match
+    def normalize_sql(sql_str: str) -> str:
+        """Normalize SQL for comparison."""
+        # Convert to lowercase
+        sql_str = sql_str.lower().strip()
+        # Remove extra whitespace
+        sql_str = re.sub(r'\s+', ' ', sql_str)
+        # Remove quotes
+        sql_str = sql_str.replace('"', '').replace("'", "")
+        return sql_str
+
+    exact_matches = 0
+    for pred, ref in zip(predictions, reference_sqls):
+        pred_normalized = normalize_sql(pred)
+        ref_normalized = normalize_sql(ref)
+        if pred_normalized == ref_normalized:
+            exact_matches += 1
+
+    exact_match = exact_matches / len(dataset) if len(dataset) > 0 else 0.0
+
+    result = {
+        "exact_match": exact_match,
+        "num_samples": len(dataset),
+    }
+
+    if output_path:
+        with open(output_path, 'w') as f:
+            json.dump(result, f, indent=2)
+        print(f"WikiSQL evaluation results saved to: {output_path}")
+
+    print(f"\nWikiSQL Evaluation Results:")
+    print(f"  Exact Match: {exact_match:.4f} ({exact_matches}/{len(dataset)})")
+
+    return result
+
+
+def evaluate_multi_nli(
+    model_path: str,
+    base_model_id: str,
+    num_samples: int = 1000,
+    output_path: Optional[str] = None,
+    batch_size: int = 8,
+) -> Dict[str, float]:
+    """
+    Evaluate on Multi-NLI dataset with accuracy metric.
+
+    Args:
+        model_path: Path to LoRA adapter
+        base_model_id: Base model ID
+        num_samples: Number of samples to evaluate
+        output_path: Path to save results
+
+    Returns:
+        Dictionary with accuracy and num_samples
+    """
+    from datasets import load_dataset
+
+    # Load validation matched set
+    dataset = load_dataset("nyu-mll/multi_nli", split="validation_matched")
+
+    if num_samples > 0:
+        dataset = dataset.select(range(min(num_samples, len(dataset))))
+
+    # Prepare prompts
+    prompts = []
+    true_labels = []
+
+    for sample in dataset:
+        premise = sample["premise"]
+        hypothesis = sample["hypothesis"]
+        label = sample["label"]
+
+        # Create prompt (without classification output)
+        prompt = (
+            f"### Instruction: Classify the relationship.\n\n"
+            f"### Premise:\n{premise}\n\n"
+            f"### Hypothesis:\n{hypothesis}\n\n"
+            f"### Classification:\n"
+        )
+        prompts.append(prompt)
+        true_labels.append(label)
+
+    # Generate predictions
+    evaluator = ModelEvaluator(model_path, base_model_id)
+    predictions = evaluator.generate(
+        prompts,
+        max_new_tokens=10,  # Only need a few tokens for the label
+        temperature=0.1,  # Low temperature for more deterministic classification
+        do_sample=False,  # Greedy decoding
+        batch_size=batch_size,
+    )
+
+    # Parse predictions and compute accuracy
+    correct = 0
+    for pred, true_label in zip(predictions, true_labels):
+        # Extract label from prediction (look for keywords)
+        pred_lower = pred.lower().strip()
+
+        # Match label
+        predicted_label = -1
+        if "entailment" in pred_lower:
+            predicted_label = 0
+        elif "neutral" in pred_lower:
+            predicted_label = 1
+        elif "contradiction" in pred_lower:
+            predicted_label = 2
+
+        if predicted_label == true_label:
+            correct += 1
+
+    accuracy = correct / len(dataset) if len(dataset) > 0 else 0.0
+
+    result = {
+        "accuracy": accuracy,
+        "num_samples": len(dataset),
+    }
+
+    if output_path:
+        with open(output_path, 'w') as f:
+            json.dump(result, f, indent=2)
+        print(f"Multi-NLI evaluation results saved to: {output_path}")
+
+    print(f"\nMulti-NLI Evaluation Results:")
+    print(f"  Accuracy: {accuracy:.4f} ({correct}/{len(dataset)})")
+
+    return result
+
+
 def compare_models(
     model_paths: Dict[str, str],
     base_model_id: str,
