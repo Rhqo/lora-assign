@@ -6,10 +6,10 @@
 
 ```bash
 # 의존성 설치
-pip install -r requirements.txt
-
-# 또는 개별 설치
 pip install torch transformers peft datasets matplotlib seaborn numpy pandas tqdm accelerate
+
+# Evaluation 관련 패키지
+pip install evaluate nltk rouge_score
 ```
 
 ### 2. 빠른 실행 (프리셋 사용)
@@ -50,7 +50,7 @@ python run_experiment.py --batch
 
 | 파라미터 | CLI 옵션 | 기본값 | 설명 |
 |---------|---------|-------|------|
-| Target Modules | `--target` | `attention_only` | `attention_only`, `mlp_only`, `both` |
+| Target Modules | `--target` | `attention_only` | `attention_only`, `mlp_only`, `both`, `all` |
 | Rank (r) | `--r` | `8` | LoRA의 low-rank dimension |
 | Alpha | `--lora_alpha` | `32` | Scaling factor (effective scale = alpha/r) |
 | Dropout | `--lora_dropout` | `0.1` | LoRA dropout 확률 |
@@ -58,7 +58,8 @@ python run_experiment.py --batch
 **Target Modules 상세:**
 - `attention_only`: `q_proj`, `k_proj`, `v_proj`, `o_proj`
 - `mlp_only`: `gate_proj`, `up_proj`, `down_proj`
-- `both`: 위의 모든 모듈
+- `both`: Attention + MLP 모듈
+- `all`: Attention + MLP + `embed_tokens` + `lm_head` (LISA 스타일)
 
 ### Training Configuration
 
@@ -84,6 +85,18 @@ python run_experiment.py --batch
 | Log Frequency | `--log_frequency` | `1` | Gradient norm 기록 주기 |
 | Layer Norm | `--no_layer_norm` | `False` | 레이어별 측정 비활성화 |
 
+### Evaluation Configuration
+
+| 파라미터 | CLI 옵션 | 기본값 | 설명 |
+|---------|---------|-------|------|
+| Enable Eval | `--no_eval` | `True` | 학습 후 자동 평가 비활성화 |
+| Eval Samples | `--eval_samples` | `100` | 평가에 사용할 샘플 수 |
+
+**평가 지표:**
+- **BLEU**: 생성 텍스트와 참조 텍스트 간 n-gram 일치도
+- **ROUGE-1/2/L**: 단어/바이그램/최장 공통 시퀀스 기반 recall
+- **METEOR**: 형태소 기반 유사도
+
 ---
 
 ## Usage Examples
@@ -93,6 +106,15 @@ python run_experiment.py --batch
 ```bash
 # 기본 설정으로 E2E + Attention 실험
 python run_experiment.py --preset e2e_attention
+
+# All layers (embed + attention + mlp + lm_head) 실험
+python run_experiment.py --dataset e2e_nlg --target all --max_steps 100
+
+# Evaluation 포함 실행 (기본값)
+python run_experiment.py --dataset e2e_nlg --target all --eval_samples 100
+
+# Evaluation 없이 빠른 실행
+python run_experiment.py --dataset e2e_nlg --target all --no_eval
 
 # 결과 확인
 ls results/e2e_attention_only/
@@ -164,15 +186,108 @@ python run_experiment.py --compare results/e2e_attn_r4 results/e2e_attn_r8 resul
 
 ```
 results/<experiment_name>/
-├── config.json                      # 실험 설정
+├── config.json                         # 실험 설정
+├── training_loss.png                   # ⭐ Training & Evaluation Loss 곡선
 ├── gradient_analysis.group_norms.csv   # 그룹별 gradient norm (step별)
 ├── gradient_analysis.layer_norms.csv   # 레이어별 gradient norm (step별)
-├── gradient_analysis.summary.json      # 통계 요약
-├── gradient_norms.png               # Attention vs MLP 비교 그래프
-├── layer_heatmap.png               # 레이어별 히트맵
-├── layer_comparison.png            # 레이어별 바 차트
-├── results_summary.json            # 최종 결과 요약
-└── checkpoints/                    # 모델 체크포인트
+├── gradient_analysis.summary.json      # Gradient 통계 요약
+├── gradient_norms.png                  # Module별 gradient norm 그래프
+├── layer_heatmap.png                   # 레이어별 히트맵 (3-panel)
+├── layer_comparison.png                # 레이어별 바 차트 (stacked + side-by-side)
+├── gradient_evolution.png              # Gradient evolution (rainbow 7-step)
+├── evaluation_results.json             # ⭐ 평가 결과 (BLEU, ROUGE, METEOR)
+├── results_summary.json                # 최종 결과 요약
+├── checkpoints/                        # 학습 중 checkpoint (최대 2개: best + last)
+│   ├── checkpoint-50/                 # Latest checkpoint
+│   └── checkpoint-100/                # Best checkpoint (eval_loss 기준)
+└── final_model/                        # ⭐ 최종 모델 (best 또는 last)
+    ├── adapter_config.json
+    └── adapter_model.safetensors
+```
+
+### 주요 출력 파일 설명
+
+**Loss 분석:**
+- `training_loss.png`: Training loss와 evaluation loss 곡선 (최소값 표시 포함)
+  - 파란색: Training loss
+  - 주황색: Evaluation loss
+  - 각 곡선의 최소값 위치와 값이 annotation으로 표시됨
+
+**Gradient 분석:**
+- `gradient_analysis.group_norms.csv`: embed, attention, mlp, lm_head, total 각각의 norm
+- `gradient_analysis.layer_norms.csv`: 각 레이어(L0~L21)의 attention/mlp norm
+- `gradient_evolution.png`: 학습 초기(빨강) → 후기(보라) gradient 변화
+
+**Evaluation 결과 (evaluation_results.json):**
+```json
+{
+  "bleu": 0.2567,
+  "rouge1": 0.4789,
+  "rouge2": 0.2356,
+  "rougeL": 0.4012,
+  "meteor": 0.3678,
+  "num_samples": 100
+}
+```
+
+**Checkpoint 정책:**
+- Validation 사용 시: `save_total_limit=2`로 best + last만 유지
+- Validation 미사용 시: 중간 checkpoint 저장 안함
+- 최종 모델은 항상 `final_model/`에 저장
+
+---
+
+## Advanced Features
+
+### 3D Gradient Visualization
+
+학습 중 gradient evolution을 3차원으로 시각화할 수 있습니다:
+
+```bash
+# 3D surface plot 생성
+python -m src.utils.3d_visualization \
+    --input results/e2e_all/gradient_analysis \
+    --output results/e2e_all/3d_plots \
+    --type surface
+
+# 모든 타입 생성 (surface, wireframe, bars)
+python -m src.utils.3d_visualization \
+    --input results/e2e_all/gradient_analysis \
+    --output results/e2e_all/3d_plots \
+    --type all
+```
+
+### Model Evaluation
+
+학습된 모델을 수동으로 평가할 수 있습니다:
+
+```bash
+# 단일 모델 평가
+python -m src.evaluation \
+    --model results/e2e_all/final_model \
+    --base TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T \
+    --dataset e2e_nlg \
+    --samples 100 \
+    --output results/e2e_all/manual_eval.json
+```
+
+**Python에서 여러 모델 비교:**
+```python
+from src.evaluation import compare_models, print_comparison_table
+
+results = compare_models(
+    model_paths={
+        "attention": "results/e2e_attention/final_model",
+        "mlp": "results/e2e_mlp/final_model",
+        "all": "results/e2e_all/final_model",
+    },
+    base_model_id="TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+    dataset_type="e2e_nlg",
+    num_samples=100,
+    output_dir="results/eval_comparison",
+)
+
+print_comparison_table(results)
 ```
 
 ---

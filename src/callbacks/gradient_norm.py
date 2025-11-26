@@ -420,8 +420,16 @@ class GradientNormCallback(TrainerCallback):
                 for i, step in enumerate(self.log.steps):
                     row = [step]
                     for layer in layers:
-                        row.append(self.log.layer_norms[layer]["attention"][i])
-                        row.append(self.log.layer_norms[layer]["mlp"][i])
+                        # Safely handle missing data (e.g., layer-wise training)
+                        attn_norms = self.log.layer_norms[layer]["attention"]
+                        mlp_norms = self.log.layer_norms[layer]["mlp"]
+
+                        # Use 0.0 if index is out of range
+                        attn_val = attn_norms[i] if i < len(attn_norms) else 0.0
+                        mlp_val = mlp_norms[i] if i < len(mlp_norms) else 0.0
+
+                        row.append(attn_val)
+                        row.append(mlp_val)
                     writer.writerow(row)
             print(f"Layer norms saved to: {layer_path}")
 

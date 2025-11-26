@@ -3,7 +3,7 @@ Dataset loading and preprocessing for E2E NLG and SAMSum.
 """
 from typing import Dict, Any, Optional
 from datasets import load_dataset, Dataset
-from transformers import PreTrainedTokenizer, DataCollatorForLanguageModeling
+from transformers import PreTrainedTokenizer, default_data_collator
 import sys
 sys.path.append(".")
 
@@ -44,6 +44,7 @@ def load_and_preprocess_dataset(
         batched=True,
         remove_columns=dataset.column_names,
         desc=f"Tokenizing {config.dataset_type.value}",
+        load_from_cache_file=False,  # IMPORTANT: Force re-process to apply padding mask fix
     )
 
     return tokenized_dataset
@@ -106,7 +107,17 @@ def _get_e2e_preprocess_fn(tokenizer: PreTrainedTokenizer, max_length: int):
         )
 
         # For causal LM, labels are same as input_ids
-        model_inputs["labels"] = model_inputs["input_ids"].copy()
+        # but we need to mask padding tokens (-100 = ignore in loss)
+        import copy
+        labels = copy.deepcopy(model_inputs["input_ids"])
+
+        # Replace padding token id with -100 to ignore in loss calculation
+        for i in range(len(labels)):
+            for j in range(len(labels[i])):
+                if labels[i][j] == tokenizer.pad_token_id:
+                    labels[i][j] = -100
+
+        model_inputs["labels"] = labels
 
         return model_inputs
 
@@ -141,14 +152,24 @@ def _get_samsum_preprocess_fn(tokenizer: PreTrainedTokenizer, max_length: int):
         )
 
         # For causal LM, labels are same as input_ids
-        model_inputs["labels"] = model_inputs["input_ids"].copy()
+        # but we need to mask padding tokens (-100 = ignore in loss)
+        import copy
+        labels = copy.deepcopy(model_inputs["input_ids"])
+
+        # Replace padding token id with -100 to ignore in loss calculation
+        for i in range(len(labels)):
+            for j in range(len(labels[i])):
+                if labels[i][j] == tokenizer.pad_token_id:
+                    labels[i][j] = -100
+
+        model_inputs["labels"] = labels
 
         return model_inputs
 
     return preprocess
 
 
-def get_data_collator(tokenizer: PreTrainedTokenizer) -> DataCollatorForLanguageModeling:
+def get_data_collator(tokenizer: PreTrainedTokenizer):
     """
     Get data collator for language modeling.
 
@@ -156,12 +177,13 @@ def get_data_collator(tokenizer: PreTrainedTokenizer) -> DataCollatorForLanguage
         tokenizer: Tokenizer
 
     Returns:
-        Data collator instance
+        Data collator function
     """
-    return DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,  # Causal LM, not masked LM
-    )
+    # CRITICAL: Use default_data_collator, NOT DataCollatorForLanguageModeling
+    # DataCollatorForLanguageModeling will overwrite our carefully masked labels
+    # We already did padding and label masking in preprocessing
+    # default_data_collator just converts to tensors without modifying data
+    return default_data_collator
 
 
 def get_validation_dataset(

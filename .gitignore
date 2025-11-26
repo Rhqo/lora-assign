@@ -1,4 +1,6 @@
-results/
+# results/
 __pychache__/
 .venv/
 *.pyc
+results/
+*.pdf

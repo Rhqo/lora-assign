@@ -21,6 +21,8 @@ def plot_gradient_norms(
     save_path: Optional[str] = None,
     figsize: tuple = (12, 6),
     smoothing_window: int = 5,
+    use_log_scale: bool = True,
+    phase_transitions: Optional[List[tuple]] = None,
 ) -> plt.Figure:
     """
     Plot gradient norms over training steps.
@@ -31,6 +33,8 @@ def plot_gradient_norms(
         save_path: Path to save the figure
         figsize: Figure size
         smoothing_window: Window size for moving average smoothing
+        use_log_scale: Whether to use log scale for y-axis
+        phase_transitions: List of (step, label) tuples for vertical lines
 
     Returns:
         Matplotlib figure
@@ -73,8 +77,11 @@ def plot_gradient_norms(
                      linestyle="-", marker="^", markersize=3, markevery=max(1, len(steps)//10))
 
     ax1.set_xlabel("Training Steps")
-    ax1.set_ylabel("Gradient Norm (log scale)")
-    ax1.set_yscale("log")
+    if use_log_scale:
+        ax1.set_ylabel("Gradient Norm (log scale)")
+        ax1.set_yscale("log")
+    else:
+        ax1.set_ylabel("Gradient Norm")
     ax1.set_title("Module-wise Gradient Norms")
     ax1.legend(loc="upper right", fontsize=8)
     ax1.grid(True, linestyle="--", alpha=0.6)
@@ -89,11 +96,25 @@ def plot_gradient_norms(
         ax2.plot(steps, total_norms, label=f"Total (mean: {mean_norm:.1f})", color=module_colors["total"])
 
     ax2.set_xlabel("Training Steps")
-    ax2.set_ylabel("Gradient Norm (log scale)")
-    ax2.set_yscale("log")
+    if use_log_scale:
+        ax2.set_ylabel("Gradient Norm (log scale)")
+        ax2.set_yscale("log")
+    else:
+        ax2.set_ylabel("Gradient Norm")
     ax2.set_title("Total Gradient Norm")
     ax2.legend(loc="upper right", fontsize=8)
     ax2.grid(True, linestyle="--", alpha=0.6)
+
+    # Add phase transition lines if provided
+    if phase_transitions:
+        for ax in [ax1, ax2]:
+            for step, label in phase_transitions:
+                ax.axvline(x=step, color='red', linestyle='--', linewidth=1.5, alpha=0.7)
+                # Add label at the top of the plot
+                ylim = ax.get_ylim()
+                y_pos = ylim[1] * 0.95 if not use_log_scale else ylim[1] * 0.8
+                ax.text(step, y_pos, label, rotation=90, verticalalignment='top',
+                       fontsize=8, color='red', alpha=0.8)
 
     plt.suptitle(title, fontsize=14, fontweight="bold")
     plt.tight_layout()
@@ -254,6 +275,7 @@ def plot_layer_comparison(
     title: str = "Layer-wise Attention vs MLP Comparison",
     save_path: Optional[str] = None,
     figsize: tuple = (14, 6),
+    use_log_scale: bool = False,
 ) -> plt.Figure:
     """
     Plot bar chart comparing mean gradient norms per layer.
@@ -336,7 +358,11 @@ def plot_layer_comparison(
         ax1.bar(x[lm_head_idx], values[lm_head_idx], color="#9C27B0", alpha=0.8, label="LM Head")
 
     ax1.set_xlabel("Component")
-    ax1.set_ylabel("Mean Gradient Norm")
+    if use_log_scale:
+        ax1.set_ylabel("Mean Gradient Norm (log scale)")
+        ax1.set_yscale("log")
+    else:
+        ax1.set_ylabel("Mean Gradient Norm")
     ax1.set_title("All Components (Stacked)")
     ax1.set_xticks(x)
     ax1.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
@@ -355,8 +381,11 @@ def plot_layer_comparison(
     ax2.bar(x2 + width / 2, mlp_means, width, label="MLP", color="#FF9800", alpha=0.8)
 
     ax2.set_xlabel("Layer")
-    ax2.set_ylabel("Mean Gradient Norm (log scale)")
-    ax2.set_yscale("log")
+    if use_log_scale:
+        ax2.set_ylabel("Mean Gradient Norm (log scale)")
+        ax2.set_yscale("log")
+    else:
+        ax2.set_ylabel("Mean Gradient Norm")
     ax2.set_title("Attention vs MLP (Layers Only)")
     ax2.set_xticks(x2)
     ax2.set_xticklabels([l.replace("layer_", "") for l in layers])
@@ -541,6 +570,7 @@ def plot_gradient_evolution(
     title: str = "Gradient Norm Evolution",
     save_path: Optional[str] = None,
     figsize: tuple = (14, 8),
+    use_log_scale: bool = True,
 ) -> plt.Figure:
     """
     Plot gradient norm evolution over training steps as line charts.
@@ -623,8 +653,11 @@ def plot_gradient_evolution(
                 color=colors[step_idx], label=f"Step {step}", alpha=0.8)
 
     ax.set_xlabel("Component", fontsize=12)
-    ax.set_ylabel("Gradient Norm (log scale)", fontsize=12)
-    ax.set_yscale("log")
+    if use_log_scale:
+        ax.set_ylabel("Gradient Norm (log scale)", fontsize=12)
+        ax.set_yscale("log")
+    else:
+        ax.set_ylabel("Gradient Norm", fontsize=12)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
     ax.grid(True, axis="y", linestyle="--", alpha=0.6)
@@ -653,6 +686,104 @@ def plot_gradient_evolution(
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Evolution plot saved to: {save_path}")
+
+    return fig
+
+
+def plot_training_loss(
+    log_history: List[Dict[str, Any]],
+    title: str = "Training and Evaluation Loss",
+    save_path: Optional[str] = None,
+    figsize: tuple = (12, 6),
+) -> plt.Figure:
+    """
+    Plot training and evaluation loss curves from trainer log history.
+
+    Args:
+        log_history: Trainer's state.log_history
+        title: Plot title
+        save_path: Path to save figure
+        figsize: Figure size
+
+    Returns:
+        Matplotlib figure
+    """
+    # Extract loss data
+    train_steps = []
+    train_losses = []
+    eval_steps = []
+    eval_losses = []
+
+    for entry in log_history:
+        if "loss" in entry and "step" in entry:
+            train_steps.append(entry["step"])
+            train_losses.append(entry["loss"])
+        if "eval_loss" in entry and "step" in entry:
+            eval_steps.append(entry["step"])
+            eval_losses.append(entry["eval_loss"])
+
+    if not train_steps and not eval_steps:
+        print("No loss data found in log history")
+        return None
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Plot training loss
+    if train_steps:
+        ax.plot(train_steps, train_losses,
+                label="Training Loss",
+                color="#2196F3",
+                linewidth=2,
+                marker="o",
+                markersize=4,
+                alpha=0.8)
+
+    # Plot evaluation loss
+    if eval_steps:
+        ax.plot(eval_steps, eval_losses,
+                label="Evaluation Loss",
+                color="#FF9800",
+                linewidth=2,
+                marker="s",
+                markersize=4,
+                alpha=0.8)
+
+    ax.set_xlabel("Training Steps", fontsize=12)
+    ax.set_ylabel("Loss", fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.legend(loc="upper right", fontsize=10)
+    ax.grid(True, linestyle="--", alpha=0.6)
+
+    # Add annotations for min values
+    if train_losses:
+        min_train_idx = np.argmin(train_losses)
+        min_train_loss = train_losses[min_train_idx]
+        min_train_step = train_steps[min_train_idx]
+        ax.annotate(f'Min: {min_train_loss:.4f}',
+                    xy=(min_train_step, min_train_loss),
+                    xytext=(10, 10),
+                    textcoords='offset points',
+                    fontsize=8,
+                    color="#2196F3",
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+
+    if eval_losses:
+        min_eval_idx = np.argmin(eval_losses)
+        min_eval_loss = eval_losses[min_eval_idx]
+        min_eval_step = eval_steps[min_eval_idx]
+        ax.annotate(f'Min: {min_eval_loss:.4f}',
+                    xy=(min_eval_step, min_eval_loss),
+                    xytext=(10, -20),
+                    textcoords='offset points',
+                    fontsize=8,
+                    color="#FF9800",
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Training loss plot saved to: {save_path}")
 
     return fig
 

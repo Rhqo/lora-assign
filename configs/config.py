@@ -58,6 +58,7 @@ class LoRAConfig:
 class TrainingConfig:
     """Training hyperparameters."""
     per_device_train_batch_size: int = 4
+    per_device_eval_batch_size: int = 4
     gradient_accumulation_steps: int = 4
     max_steps: int = 100
     learning_rate: float = 2e-4
@@ -67,7 +68,12 @@ class TrainingConfig:
     max_grad_norm: float = 1.0  # Gradient clipping
     lr_scheduler_type: str = "cosine"  # "linear", "cosine", "constant"
     logging_steps: int = 10
-    save_steps: int = 100
+    eval_steps: int = 10   # Evaluate every N steps
+    save_steps: int = 50  # Save checkpoint every N steps (when using validation)
+    save_strategy: str = "steps"  # Save based on steps
+    save_total_limit: int = 2  # Keep only best and last (2 checkpoints max)
+    load_best_model_at_end: bool = True  # Load best model at end
+    metric_for_best_model: str = "eval_loss"  # Use validation loss
     seed: int = 42
 
 
@@ -77,7 +83,7 @@ class DataConfig:
     dataset_type: DatasetType = DatasetType.E2E_NLG
     max_length: int = 128
     num_samples: int = 0  # Number of training samples (0 for full dataset)
-    validation_split: float = 0.1  # Ratio for validation set
+    validation_split: float = 0.2  # Ratio for validation set (increased from 0.1)
 
     @property
     def dataset_name(self) -> str:
@@ -99,6 +105,29 @@ class GradientAnalysisConfig:
 
 
 @dataclass
+class EvaluationConfig:
+    """Configuration for model evaluation."""
+    enabled: bool = True  # Whether to run evaluation after training
+    num_samples: int = 100  # Number of test samples to evaluate
+    max_new_tokens: int = 128  # Max tokens to generate
+    temperature: float = 0.7  # Sampling temperature
+    top_p: float = 0.9  # Top-p sampling
+    do_sample: bool = True  # Use sampling vs greedy
+    batch_size: int = 8  # Batch size for generation
+
+
+@dataclass
+class DynamicLoRAConfig:
+    """Configuration for dynamic LoRA module switching during training."""
+    enabled: bool = False  # Whether to use dynamic LoRA switching
+    phase_strategy: str = "both->mlp->attn"  # Phase switching strategy
+    phase1_steps: tuple = (0, 100)  # Phase 1 steps
+    phase2_steps: tuple = (100, 200)  # Phase 2 steps
+    phase3_steps: tuple = (200, None)  # Phase 3 steps (None = until end)
+    verbose: bool = True  # Print phase transitions
+
+
+@dataclass
 class ExperimentConfig:
     """Complete experiment configuration."""
     # Sub-configs
@@ -107,6 +136,8 @@ class ExperimentConfig:
     training: TrainingConfig = field(default_factory=TrainingConfig)
     data: DataConfig = field(default_factory=DataConfig)
     gradient_analysis: GradientAnalysisConfig = field(default_factory=GradientAnalysisConfig)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    dynamic_lora: DynamicLoRAConfig = field(default_factory=DynamicLoRAConfig)
 
     # Experiment metadata
     experiment_name: str = "lora_sensitivity"
@@ -185,6 +216,8 @@ def config_from_dict(data: dict) -> ExperimentConfig:
     training = TrainingConfig(**data.get("training", {}))
     data_cfg = DataConfig(**data.get("data", {}))
     grad_analysis = GradientAnalysisConfig(**data.get("gradient_analysis", {}))
+    eval_cfg = EvaluationConfig(**data.get("evaluation", {}))
+    dynamic_lora_cfg = DynamicLoRAConfig(**data.get("dynamic_lora", {}))
 
     return ExperimentConfig(
         model=model,
@@ -192,6 +225,8 @@ def config_from_dict(data: dict) -> ExperimentConfig:
         training=training,
         data=data_cfg,
         gradient_analysis=grad_analysis,
+        evaluation=eval_cfg,
+        dynamic_lora=dynamic_lora_cfg,
         experiment_name=data.get("experiment_name", "lora_sensitivity"),
         output_dir=data.get("output_dir", "./results"),
     )
