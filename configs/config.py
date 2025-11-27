@@ -26,7 +26,7 @@ class TargetModuleGroup(str, Enum):
     ATTENTION_ONLY = "attention_only"
     MLP_ONLY = "mlp_only"
     BOTH = "both"
-    ALL = "all"  # All layers including embed and lm_head
+    ALL = "all"  # Same as BOTH (deprecated: embed and lm_head removed)
 
 
 # Pre-defined target modules for each group
@@ -34,7 +34,7 @@ TARGET_MODULES = {
     TargetModuleGroup.ATTENTION_ONLY: ["q_proj", "v_proj"], # , "k_proj", "o_proj"
     TargetModuleGroup.MLP_ONLY: ["gate_proj", "up_proj", "down_proj"],
     TargetModuleGroup.BOTH: ["q_proj", "k_proj", "o_proj", "v_proj", "gate_proj", "up_proj", "down_proj"], # , "k_proj", "o_proj"
-    TargetModuleGroup.ALL: ["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"], # , "k_proj", "o_proj"
+    TargetModuleGroup.ALL: ["q_proj", "k_proj", "o_proj", "v_proj", "gate_proj", "up_proj", "down_proj"], # Same as BOTH
 }
 
 

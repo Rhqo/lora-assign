@@ -32,7 +32,7 @@ class DynamicLoRACallback(TrainerCallback):
                 Each config: {
                     "start_step": int,
                     "end_step": int or None (None = until end),
-                    "active_modules": ["attention", "mlp", "embed", "lm_head"],
+                    "active_modules": ["attention", "mlp"],
                     "layer_range": (start, end) or None (None = all layers)
                 }
             verbose: Print phase transitions
@@ -44,8 +44,6 @@ class DynamicLoRACallback(TrainerCallback):
         # LoRA module patterns
         self.attention_patterns = ["q_proj", "k_proj", "v_proj", "o_proj"]
         self.mlp_patterns = ["gate_proj", "up_proj", "down_proj"]
-        self.embed_patterns = ["embed_tokens"]
-        self.lm_head_patterns = ["lm_head"]
 
     def _get_current_phase(self, step: int) -> Optional[Dict]:
         """Get the phase config for current step."""
@@ -71,12 +69,6 @@ class DynamicLoRACallback(TrainerCallback):
         # Check MLP modules
         elif any(pattern in name for pattern in self.mlp_patterns):
             return "mlp"
-        # Check embed
-        elif any(pattern in name for pattern in self.embed_patterns):
-            return "embed"
-        # Check lm_head
-        elif any(pattern in name for pattern in self.lm_head_patterns):
-            return "lm_head"
         return None
 
     def _get_layer_number(self, name: str) -> Optional[int]:

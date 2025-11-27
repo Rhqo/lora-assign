@@ -111,7 +111,7 @@ Examples:
         type=str,
         choices=["attention_only", "mlp_only", "both", "all"],
         default="attention_only",
-        help="Target modules for LoRA (default: attention_only). 'all' includes embed_tokens and lm_head",
+        help="Target modules for LoRA (default: attention_only). 'all' is same as 'both'",
     )
     parser.add_argument(
         "--r",

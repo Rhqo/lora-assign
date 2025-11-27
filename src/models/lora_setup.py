@@ -49,12 +49,6 @@ def setup_model_with_lora(
         trust_remote_code=model_config.trust_remote_code,
     )
 
-    # Separate target modules: LoRA vs modules_to_save
-    # embed_tokens and lm_head can't use LoRA adapters, they need to be saved/trained directly
-    special_modules = ["embed_tokens", "lm_head"]
-    lora_targets = [m for m in lora_config.target_modules if m not in special_modules]
-    modules_to_save = [m for m in lora_config.target_modules if m in special_modules]
-
     # Configure LoRA
     peft_config = PeftLoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -62,8 +56,7 @@ def setup_model_with_lora(
         r=lora_config.r,
         lora_alpha=lora_config.lora_alpha,
         lora_dropout=lora_config.lora_dropout,
-        target_modules=lora_targets if lora_targets else None,
-        modules_to_save=modules_to_save if modules_to_save else None,
+        target_modules=lora_config.target_modules,
         bias=lora_config.bias,
     )
 
