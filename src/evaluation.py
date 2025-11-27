@@ -89,6 +89,9 @@ class ModelEvaluator:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        # Use left-padding for decoder-only models (required for correct generation)
+        self.tokenizer.padding_side = 'left'
+
         # Load model
         if base_model_id is not None:
             # Load as LoRA adapter

@@ -33,7 +33,7 @@ class TargetModuleGroup(str, Enum):
 TARGET_MODULES = {
     TargetModuleGroup.ATTENTION_ONLY: ["q_proj", "v_proj"], # , "k_proj", "o_proj"
     TargetModuleGroup.MLP_ONLY: ["gate_proj", "up_proj", "down_proj"],
-    TargetModuleGroup.BOTH: ["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj"], # , "k_proj", "o_proj"
+    TargetModuleGroup.BOTH: ["q_proj", "k_proj", "o_proj", "v_proj", "gate_proj", "up_proj", "down_proj"], # , "k_proj", "o_proj"
     TargetModuleGroup.ALL: ["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj", "embed_tokens", "lm_head"], # , "k_proj", "o_proj"
 }
 
@@ -68,16 +68,16 @@ class TrainingConfig:
     per_device_train_batch_size: int = 4
     per_device_eval_batch_size: int = 4
     gradient_accumulation_steps: int = 4
-    max_steps: int = 100
+    max_steps: int = 1000
     learning_rate: float = 2e-4
     warmup_steps: int = 10
     warmup_ratio: float = 0.0  # Alternative to warmup_steps (0 to disable)
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0  # Gradient clipping
     lr_scheduler_type: str = "cosine"  # "linear", "cosine", "constant"
-    logging_steps: int = 10
-    eval_steps: int = 10   # Evaluate every N steps
-    save_steps: int = 50  # Save checkpoint every N steps (when using validation)
+    logging_steps: int = 100
+    eval_steps: int = 100   # Evaluate every N steps
+    save_steps: int = 100  # Save checkpoint every N steps (when using validation)
     save_strategy: str = "steps"  # Save based on steps
     save_total_limit: int = 2  # Keep only best and last (2 checkpoints max)
     load_best_model_at_end: bool = True  # Load best model at end
@@ -92,7 +92,7 @@ class DataConfig:
     task_type: TaskType = TaskType.GENERATION
     max_length: int = 128
     num_samples: int = 0  # Number of training samples (0 for full dataset)
-    validation_split: float = 0.2  # Ratio for validation set (increased from 0.1)
+    validation_split: float = 0.1  # Ratio for validation set (increased from 0.1)
     num_labels: int = 3  # For classification tasks (e.g., Multi-NLI has 3 classes)
 
     @property
@@ -120,7 +120,7 @@ class GradientAnalysisConfig:
 class EvaluationConfig:
     """Configuration for model evaluation."""
     enabled: bool = True  # Whether to run evaluation after training
-    num_samples: int = 100  # Number of test samples to evaluate
+    num_samples: int = 0  # Number of test samples to evaluate
     max_new_tokens: int = 128  # Max tokens to generate
     temperature: float = 0.7  # Sampling temperature
     top_p: float = 0.9  # Top-p sampling

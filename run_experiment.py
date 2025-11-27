@@ -95,7 +95,7 @@ Examples:
     parser.add_argument(
         "--num_samples",
         type=int,
-        default=0,
+        default=10000,
         help="Number of training samples (default: 500, 0 for full dataset)",
     )
     parser.add_argument(
@@ -148,7 +148,7 @@ Examples:
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=100,
+        default=1000,
         help="Maximum training steps (default: 100)",
     )
     parser.add_argument(
@@ -214,7 +214,7 @@ Examples:
     parser.add_argument(
         "--eval_samples",
         type=int,
-        default=100,
+        default=10000,
         help="Number of samples for evaluation (default: 100)",
     )
 
@@ -286,8 +286,13 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
     if args.dynamic_lora:
         config.dynamic_lora.phase_strategy = args.phase_strategy
         config.dynamic_lora.phase1_steps = (0, args.phase1_end)
-        config.dynamic_lora.phase2_steps = (args.phase1_end, args.phase2_end)
-        config.dynamic_lora.phase3_steps = (args.phase2_end, None)
+
+        # For early->late strategy, phase2 should go until the end
+        if args.phase_strategy == "early->late":
+            config.dynamic_lora.phase2_steps = (args.phase1_end, None)
+        else:
+            config.dynamic_lora.phase2_steps = (args.phase1_end, args.phase2_end)
+            config.dynamic_lora.phase3_steps = (args.phase2_end, None)
 
     # Output
     config.output_dir = args.output_dir
@@ -431,8 +436,8 @@ def run_single_experiment(config: ExperimentConfig) -> dict:
                 },
                 "both->mlp->attn": {
                     "phase1": ["attention", "mlp"],
-                    "phase2": ["mlp"],
-                    "phase3": ["attention"],
+                    "phase2": ["attention"],
+                    "phase3": ["mlp"],
                     "labels": ["Both (Attention + MLP)", "MLP only", "Attention only"],
                 },
                 "both->mlp->both": {

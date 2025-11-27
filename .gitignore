@@ -1,6 +1,6 @@
-# results/
 __pychache__/
 .venv/
 *.pyc
+legacy/
 results/
 *.pdf
